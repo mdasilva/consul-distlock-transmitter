@@ -92,6 +92,7 @@ func main() {
 		Value:      []byte("set by tcp emitter " + id),
 		SessionTTL: "10s",
 		SessionOpts: &api.SessionEntry{
+			//Checks:   []string{"check1", "check2"},
 			Behavior: "release",
 		},
 	}
