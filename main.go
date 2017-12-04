@@ -14,7 +14,9 @@ import (
 
 var server string
 var lock *api.Lock
+var stopCh chan struct{}
 var id string
+var wait bool
 
 func emit(lock *api.Lock, lc <-chan struct{}, sc chan bool) {
 	conn, err := net.Dial("tcp", server)
@@ -35,8 +37,8 @@ func emit(lock *api.Lock, lc <-chan struct{}, sc chan bool) {
 				return
 			}
 		default:
-
-			fmt.Fprintf(conn, "bananas %d\n", counter)
+			// emit counter
+			fmt.Fprintf(conn, "%s %d\n", id, counter)
 			time.Sleep(1 * time.Second)
 			counter++
 		}
@@ -44,7 +46,9 @@ func emit(lock *api.Lock, lc <-chan struct{}, sc chan bool) {
 }
 
 func main() {
+
 	// cli flags
+	flag.BoolVar(&wait, "wait", true, "use consul session locking")
 	flag.StringVar(&id, "id", "unknown", "id of emitter")
 	flag.StringVar(&server, "server", "127.0.0.1:9000", "tcp server")
 	flag.Parse()
@@ -58,7 +62,12 @@ func main() {
 
 	// catch sigint to clean up
 	c := make(chan os.Signal, 2)
-	signal.Notify(c, os.Interrupt, syscall.SIGINT)
+	signal.Notify(c,
+		os.Interrupt,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
 	go func() {
 		<-c
 		err := lock.Unlock()
@@ -80,7 +89,7 @@ func main() {
 	// set session lock options
 	opts := &api.LockOptions{
 		Key:        "tcp_receiver/lock",
-		Value:      []byte("set by tcp emitter %s", id),
+		Value:      []byte("set by tcp emitter " + id),
 		SessionTTL: "10s",
 		SessionOpts: &api.SessionEntry{
 			Behavior: "release",
@@ -95,7 +104,7 @@ func main() {
 	}
 
 	// consul lock acquision stop channel
-	stopCh := make(chan struct{})
+	stopCh = make(chan struct{})
 	// consul lock status channel
 	lockCh := make(<-chan struct{})
 	// emit running status channel
@@ -103,13 +112,22 @@ func main() {
 
 	// session lock loop
 	for {
-		log.Infoln("Attemping lock acquision")
-		lockCh, err = lock.Lock(stopCh)
-		if err != nil {
-			log.Errorln(err)
+		if wait {
+			// cancel blocking lock acquision
+			go func() {
+				time.Sleep(1 * time.Second)
+				stopCh <- struct{}{}
+			}()
+
+			log.Infoln("Attemping lock acquision")
+			// this is a blocking operation
+			lockCh, err = lock.Lock(stopCh)
+			if err != nil {
+				log.Errorln(err)
+			}
+			log.Infoln("Lock aquired")
 		}
 
-		log.Infoln("Lock aquired, beginning transmission")
 		go emit(lock, lockCh, emitCh)
 
 		// wait until emitter stops
